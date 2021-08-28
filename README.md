@@ -1,8 +1,6 @@
-# Getting Started Guide – AWS Control Tower Account vending through Amazon Lex ChatBot
+# Multi-Environment Chatops Bot for AWS Control Tower
 
-*Luiz Decaro, Senior Solutions Architect, Global Financial Services*
-
-*Marco Fischer, Senior Solutions Architect, Global Financial Services*
+Build a fully Serverless ChatOps bot powered by AI (Amazon Lex) through a multi-environment CICD pipeline that integrates with AWS Control Tower Account Factory. Build an easy frontend integration with your favorite request portal or channel (Slack, Chime or Website) to offer AWS Account vending at scale for your customers.
 
 # Table of Contents
 1. [Introduction](#introduction)
