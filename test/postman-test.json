@@ -1,0 +1,88 @@
+{
+	"info": {
+		"_postman_id": "624b2c2b-c8fc-473f-8e58-cd7cf9513dd5",
+		"name": "chatops-lex",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"item": [
+		{
+			"name": "Production-Test-API",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"type": "text",
+						"value": "application/json"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n\"UserEmail\": \"user@yourdomain.com\",\n\"UserName\":\"TestUser-Name\",\n\"UserLastname\": \"TestUser-LastName\",\n\"UserInput\": \"Hi, I would like a new account please!\"}",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "https://apiID.execute-api.us-east-1.amazonaws.com/Prod/account",
+					"protocol": "https",
+					"host": [
+						"apiID",
+						"execute-api",
+						"us-east-1",
+						"amazonaws",
+						"com"
+					],
+					"path": [
+						"Prod",
+						"account"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Production-Confirm-API",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"type": "text",
+						"value": "application/json",
+						"disabled": true
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "https://apiID.execute-api.us-east-1.amazonaws.com/Prod/account/confirm/\nunique-confirmID",
+					"protocol": "https",
+					"host": [
+						"apiID",
+						"execute-api",
+						"us-east-1",
+						"amazonaws",
+						"com"
+					],
+					"path": [
+						"Prod",
+						"account",
+						"confirm",
+						"\nunique-Confirm-ID"
+					]
+				}
+			},
+			"response": []
+		}	
+    ]
+}

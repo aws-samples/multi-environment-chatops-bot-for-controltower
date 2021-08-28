@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Configuration>
+  <Appenders>
+    <Console name="ConsoleAppender" target="SYSTEM_OUT">
+      <PatternLayout pattern="[%-5p]\t%d\t[%c{1}]\t- %m%n"/><!-- [%-5p]\t%d\t[%c{1}]\t- %m%n -->
+    </Console>
+    <Async name="AsyncConsole">
+      <AppenderRef ref="ConsoleAppender"/>
+    </Async>
+  </Appenders>
+  <Loggers>
+    <Root level="info">
+      <AppenderRef ref="AsyncConsole" level="INFO" />
+    </Root>
+  </Loggers>
+</Configuration>

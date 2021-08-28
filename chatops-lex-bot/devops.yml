@@ -1,0 +1,398 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: AWS CI-CD Pipeline - Dev/Staging/Prod
+
+Parameters:
+  ProjectName:
+    Description: Project name.
+    Type: String
+    Default: chatops-lex
+  CodeS3Bucket:
+    Description: S3 Bucket name and path where our bundled source code resides e.g. MY-BUCKET-NAME/sam/nodejs
+    Type: String
+    Default: chatops-deploy-bot-changeit
+
+Resources:
+    CodeRepository:
+        Type: AWS::CodeCommit::Repository
+        Properties:
+          RepositoryName: !Ref ProjectName
+          RepositoryDescription:
+            !Join
+              - ''
+              - - "CodeCommit repository for "
+                - !Ref ProjectName
+          Code:
+            S3: 
+              Bucket: !Ref CodeS3Bucket
+              Key: !Sub '${ProjectName}.zip'
+          Tags:
+            - 
+              Key: "Stack"
+              Value: !Ref AWS::StackName
+            -
+              Key: "Project"
+              Value: !Ref ProjectName
+    BuildArtifactsBucket:
+        Type: AWS::S3::Bucket
+        Properties:
+          BucketName: !Sub 'pipeline-staging-${ProjectName}'
+          BucketEncryption:
+            ServerSideEncryptionConfiguration:
+              - ServerSideEncryptionByDefault:
+                  SSEAlgorithm: AES256
+          Tags: 
+            - 
+              Key: "Stack"
+              Value: !Ref AWS::StackName
+            -
+              Key: "Project"
+              Value: !Ref ProjectName
+
+    CodeBuildProject:
+        Type: AWS::CodeBuild::Project
+        Properties:
+            Name: !Sub ${ProjectName}-Build
+            Description: !Sub 'Build project for the ${ProjectName}'
+            Artifacts:
+              Type: CODEPIPELINE
+            Environment: 
+                Type: LINUX_CONTAINER
+                ComputeType: BUILD_GENERAL1_SMALL
+                Image: aws/codebuild/amazonlinux2-x86_64-standard:2.0 #  https://docs.aws.amazon.com/codebuild/latest/userguide/build-env-ref-available.html
+                EnvironmentVariables:
+                  - 
+                    Name: PACKAGE_BUCKET
+                    Value: !Ref BuildArtifactsBucket
+            Cache:
+              Type: S3
+              Location: !Sub ${BuildArtifactsBucket}/codebuild-cache
+            ServiceRole: !GetAtt CodeBuildServiceRole.Arn
+            Source: 
+                Type: CODEPIPELINE
+            Tags: 
+              - 
+                Key: "Stack"
+                Value: !Ref AWS::StackName
+              -
+                Key: "Project"
+                Value: !Ref ProjectName
+
+    Pipeline:
+        Type: AWS::CodePipeline::Pipeline
+        Properties:
+            ArtifactStore: 
+                Location: !Ref BuildArtifactsBucket
+                Type: S3
+            Name: !Ref ProjectName
+            RoleArn: !GetAtt CodePipelineExecutionRole.Arn
+            Stages:
+                - Name: Source
+                  Actions:
+                    - Name: SourceCodeRepo
+                      ActionTypeId:
+                        Category: Source
+                        Owner: AWS
+                        Provider: CodeCommit
+                        Version: "1"
+                      Configuration:
+                        RepositoryName: !GetAtt CodeRepository.Name
+                        BranchName: main
+                      OutputArtifacts:
+                        - Name: SourceCodeAsZip
+                      RunOrder: 1
+                - Name: Build
+                  Actions:
+                    - Name: CodeBuild
+                      ActionTypeId:
+                        Category: Build
+                        Owner: AWS
+                        Provider: CodeBuild
+                        Version: "1"
+                      Configuration:
+                        ProjectName: !Ref CodeBuildProject
+                      InputArtifacts:
+                        - Name: SourceCodeAsZip
+                      OutputArtifacts:
+                        - Name: BuildArtifactAsZip
+                      RunOrder: 1            
+                - Name: Prod
+                  Actions:
+                    - Name: CreateChangeSet
+                      ActionTypeId:
+                        Category: Deploy
+                        Owner: AWS
+                        Provider: CloudFormation
+                        Version: "1"
+                      Configuration:
+                        ActionMode: CHANGE_SET_REPLACE
+                        RoleArn: !GetAtt CloudFormationExecutionRole.Arn
+                        StackName: !Sub ${ProjectName}-Prod
+                        ChangeSetName: !Sub ${ProjectName}-ChangeSet-Prod
+#                        ParameterOverrides: !Sub '{"ProjectName": "${ProjectName}","Stage": "Prod" }'
+                        TemplatePath: BuildArtifactAsZip::packaged.yaml
+                        Capabilities: CAPABILITY_IAM
+                      InputArtifacts:
+                        - Name: BuildArtifactAsZip
+                      RunOrder: 1
+                    - Name: ExecuteChangeSet
+                      ActionTypeId:
+                        Category: Deploy
+                        Owner: AWS
+                        Provider: CloudFormation
+                        Version: "1"
+                      Configuration:
+                        ActionMode: CHANGE_SET_EXECUTE
+                        RoleArn: !GetAtt CloudFormationExecutionRole.Arn
+                        StackName: !Sub ${ProjectName}-Prod
+                        ChangeSetName: !Sub ${ProjectName}-ChangeSet-Prod
+                      OutputArtifacts:
+                        - Name: !Sub ${ProjectName}ProdChangeSet
+                      RunOrder: 2
+
+    CodeBuildServiceRole:
+        Type: AWS::IAM::Role
+        Properties:
+            RoleName: !Sub '${ProjectName}-CodeBuildServiceRole'
+            AssumeRolePolicyDocument:
+                Version: '2012-10-17'
+                Statement:
+                  - Action: 
+                      - 'sts:AssumeRole'
+                    Effect: Allow
+                    Principal:
+                      Service:
+                        - codebuild.amazonaws.com
+            Path: /
+            Policies:
+                - PolicyName: CodeBuildLogs
+                  PolicyDocument:
+                    Version: '2012-10-17'
+                    Statement:
+                      - 
+                        Effect: Allow
+                        Action:
+                          - 'logs:CreateLogGroup'
+                          - 'logs:CreateLogStream'
+                          - 'logs:PutLogEvents'
+                        Resource:
+                          - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/${ProjectName}-Build'
+                          - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/${ProjectName}-Build:*'
+                          - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/${ProjectName}-LoadTest'
+                          - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/${ProjectName}-LoadTest:*'
+                - PolicyName: CodeBuildArtifactsBucket
+                  PolicyDocument:
+                    Version: '2012-10-17'
+                    Statement:
+                      - 
+                        Effect: Allow
+                        Action: 
+                          - 's3:GetObject'
+                          - 's3:GetObjectVersion'
+                          - 's3:PutObject'
+                        Resource:
+                          - !Sub 'arn:aws:s3:::${BuildArtifactsBucket}/*'
+                - PolicyName: CodeBuildParameterStore
+                  PolicyDocument:
+                    Version: '2012-10-17'
+                    Statement:
+                      -
+                        Effect: Allow
+                        Action: 'ssm:GetParameters'
+                        Resource: !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/chatops/api/*'
+
+    CloudFormationExecutionRole:
+      Type: AWS::IAM::Role
+      Properties:
+        RoleName: !Sub '${ProjectName}-CloudFormationExecutionRole'      
+        AssumeRolePolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            Action: 'sts:AssumeRole'
+            Effect: Allow
+            Principal:
+              Service: cloudformation.amazonaws.com
+        Path: /
+        Policies:
+            - PolicyName: CreateAPIActions
+              PolicyDocument:
+                Version: '2012-10-17'
+                Statement:
+                      - Effect: Allow
+                        Action:
+                          - 'lambda:InvokeFunction'
+                          - 'lambda:DeleteFunction'
+                          - 'lambda:RemovePermission'
+                          - 'lambda:UpdateFunctionCode'                          
+                          - 'lambda:DeleteAlias'
+                          - 'iam:PassRole'
+                        Resource: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${ProjectName}*'
+                      - Effect: Allow
+                        Action:
+                          - 'cloudwatch:DescribeAlarms'
+                          - 'cloudwatch:PutMetricAlarm'
+                        Resource: !Sub 'arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${ProjectName}*'
+                      - Effect: Allow
+                        Action:
+                          - 'iam:AttachRolePolicy'
+                          - 'iam:CreateRole'
+                          - 'iam:CreateServiceLinkedRole'
+                          - 'iam:GetRole'
+                          - 'iam:GetRolePolicy'
+                          - 'iam:PutRolePolicy'
+                          - 'iam:DetachRolePolicy'
+                          - 'iam:DeleteRole'
+                          - 'iam:DeleteRolePolicy'
+                          - 'iam:PassRole'
+                        Resource: !Sub 'arn:aws:iam::${AWS::AccountId}:role/${ProjectName}*'
+                      - Effect: Allow
+                        Action:
+                          - 'kms:CreateGrant'
+                          - 'kms:Decrypt'
+                          - 'kms:DescribeKey'
+                          - 'kms:Encrypt'
+                        Resource: !Sub 'arn:aws:kms:${AWS::Region}:${AWS::AccountId}:key/*'
+                      - Effect: Allow
+                        Action:
+                          - 'lambda:AddPermission'
+                          - 'lambda:CreateAlias'
+                          - 'lambda:CreateFunction'
+                          - 'lambda:GetFunction'
+                          - 'lambda:GetFunctionCodeSigningConfig'
+                          - 'lambda:ListVersionsByFunction'
+                          - 'lambda:PublishVersion'
+                        Resource: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${ProjectName}*'
+                      - Effect: Allow
+                        Action: 
+                          - 'ssm:PutParameter'
+                          - 'ssm:DeleteParameter'
+                          - 'ssm:GetParameter'
+                        Resource: 
+                          - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${ProjectName}*'
+                          - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/*chatops*'
+                      - Effect: Allow
+                        Action: 'cloudformation:CreateChangeSet'
+                        Resource: !Sub 'arn:aws:cloudformation:${AWS::Region}:aws:transform/Serverless-2016-10-31'
+                      - Effect: Allow
+                        Action: 
+                          - 'codedeploy:CreateApplication'
+                          - 'codedeploy:DeleteApplication'
+                        Resource: !Sub 'arn:aws:codedeploy:${AWS::Region}:${AWS::AccountId}:application:${ProjectName}*'
+                      - Effect: Allow
+                        Action: 
+                          - 'codedeploy:CreateDeploymentGroup'
+                          - 'codedeploy:DeleteDeploymentGroup'
+                        Resource: !Sub 'arn:aws:codedeploy:${AWS::Region}:${AWS::AccountId}:deploymentgroup:${ProjectName}*'
+                      - Effect: Allow
+                        Action: 
+                          - 'sns:GetTopicAttributes'
+                          - 'sns:CreateTopic'
+                          - 'sns:DeleteTopic'
+                          - 'sns:Subscribe'
+                        Resource: !Sub 'arn:aws:sns:${AWS::Region}:${AWS::AccountId}:${ProjectName}*'
+                      - Effect: Allow
+                        Action: 
+                          - 's3:GetObject'
+                        Resource: !Sub 'arn:aws:s3:::pipeline-staging-${ProjectName}/*'
+                      - Effect: Allow
+                        Action: 
+                          - 'logs:CreateLogGroup'
+                          - 'logs:PutRetentionPolicy'
+                          - 'logs:DeleteLogGroup'
+                          - 'logs:PutMetricFilter'
+                          - 'logs:DeleteMetricFilter'
+                        Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${ProjectName}*'
+
+    CodePipelineExecutionRole:
+        Type: AWS::IAM::Role
+        Properties:
+            RoleName: !Sub '${ProjectName}-CodePipelineExecutionRole'
+            AssumeRolePolicyDocument:
+                Version: '2012-10-17'
+                Statement:
+                  - 
+                    Action: 
+                        - 'sts:AssumeRole'
+                    Effect: Allow
+                    Principal:
+                      Service: 
+                        - codepipeline.amazonaws.com
+            Path: /
+            Policies:
+                - PolicyName: CodePipelineAccess
+                  PolicyDocument:
+                    Version: '2012-10-17'
+                    Statement:
+                        - 
+                            Effect: Allow
+                            Action:
+                                - 'iam:PassRole'
+                            Resource: !GetAtt CloudFormationExecutionRole.Arn
+                - PolicyName: CodePipelineCodeAndArtifactsS3Bucket
+                  PolicyDocument:
+                    Version: '2012-10-17'
+                    Statement:
+                      - 
+                        Effect: Allow
+                        Action: 
+                          - 's3:GetObject'
+                          - 's3:PutObject'
+                        Resource: !Sub 'arn:aws:s3:::${BuildArtifactsBucket}/*'
+                      - 
+                        Effect: Allow
+                        Action: 
+                          - 'codecommit:UploadArchive'
+                          - 'codecommit:BatchGetRepositories'
+                          - 'codecommit:CreateBranch'
+                          - 'codecommit:CreateRepository'
+                          - 'codecommit:Delete*'
+                          - 'codecommit:Get*'
+                          - 'codecommit:GitPull'
+                          - 'codecommit:GitPush'
+                          - 'codecommit:List*'
+                          - 'codecommit:Put*'
+                          - 'codecommit:Post*'
+                          - 'codecommit:Merge*'
+                          - 'codecommit:TagResource'
+                          - 'codecommit:Test*'
+                          - 'codecommit:UntagResource'
+                          - 'codecommit:Update*'                              
+                        Resource: !Sub 'arn:aws:codecommit:${AWS::Region}:${AWS::AccountId}:${CodeRepository.Name}'
+                - PolicyName: CodePipelineCodeBuildAndCloudformationAccess
+                  PolicyDocument:
+                    Version: '2012-10-17'
+                    Statement:
+                      - 
+                        Effect: Allow
+                        Action: 
+                          - 'codebuild:StartBuild'
+                          - 'codebuild:BatchGetBuilds'
+                        Resource: 
+                          - !Sub 'arn:aws:codebuild:${AWS::Region}:${AWS::AccountId}:project/${CodeBuildProject}'
+                      - 
+                        Effect: Allow
+                        Action: 
+                          - 'cloudformation:CreateStack'
+                          - 'cloudformation:DescribeStacks'
+                          - 'cloudformation:DeleteStack'
+                          - 'cloudformation:UpdateStack'
+                          - 'cloudformation:CreateChangeSet'
+                          - 'cloudformation:ExecuteChangeSet'
+                          - 'cloudformation:DeleteChangeSet'
+                          - 'cloudformation:DescribeChangeSet'
+                          - 'cloudformation:SetStackPolicy'
+                          - 'cloudformation:SetStackPolicy'
+                          - 'cloudformation:ValidateTemplate'
+                        Resource: 
+                          - !Sub 'arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${ProjectName}*/*'
+ 
+Outputs:
+  ArtifactBucket:
+    Description: Artifact Bucket to be Used
+    Value: !Ref BuildArtifactsBucket
+  CodeCommitRepositoryHttpUrl:
+      Description: AWS CodeCommit Git repository
+      Value: !GetAtt CodeRepository.CloneUrlHttp
+  CodeBuildProject:
+      Description: CodeBuild Project name
+      Value: !Ref CodeBuildProject

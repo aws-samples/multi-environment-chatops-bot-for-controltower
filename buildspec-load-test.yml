@@ -1,0 +1,19 @@
+version: 0.2
+phases:
+  install:
+    runtime-versions: 
+      nodejs: 12
+      python: 3.8
+    commands:
+      - echo "[Install phase]"
+      # Install all dependencies (including dependencies for running tests)
+      - virtualenv venv
+      - source venv/bin/activate
+      - pip3 install locust
+      - apiUrl=''
+      - while [ -z $apiUrl ]; do   apiUrl=$(aws ssm get-parameter --name /chatops/api/Staging --query "Parameter.Value" --output text);   sleep 2;   echo "If this is the first run, let's wait for the app to be deployed. Testing again..."; done
+      - echo $apiUrl
+  build:
+    commands:
+      - echo "[Build phase]"
+      - locust -f locust-script.py -H ${apiUrl} --headless -u 5 -r 5 -t 3m

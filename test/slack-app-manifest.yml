@@ -1,0 +1,32 @@
+_metadata:
+  major_version: 1
+  minor_version: 1
+display_information:
+  name: aws-controltower
+  description: The AWS Control Tower Slack Bot
+  background_color: "#000000"
+features:
+  app_home:
+    home_tab_enabled: false
+    messages_tab_enabled: true
+    messages_tab_read_only_enabled: false
+  bot_user:
+    display_name: aws-controltower
+    always_online: true
+oauth_config:
+  scopes:
+    bot:
+      - channels:history
+      - chat:write
+      - im:history
+      - users:read.email
+      - users:read
+settings:
+  event_subscriptions:
+    request_url: https://xyz.execute-api.us-east-1.amazonaws.com/Prod/account
+    bot_events:
+      - message.channels
+      - message.im
+  org_deploy_enabled: false
+  socket_mode_enabled: false
+  is_hosted: false

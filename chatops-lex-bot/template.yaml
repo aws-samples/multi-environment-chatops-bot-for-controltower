@@ -1,0 +1,72 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Resources:
+
+  # See https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/sam-resource-function.html
+  # for more info to see how to tune the lambda function configs based on your use case.
+  ChatOpsFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument: 
+        Version: "2012-10-17"
+        Statement: 
+          - 
+            Effect: "Allow"
+            Principal: 
+              Service: 
+                - "lambda.amazonaws.com"
+            Action: 
+              - "sts:AssumeRole"
+      Path: "/"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies: 
+        - PolicyName: ChatOpsBuilderFunctionAccessPolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Sid: ChatOpsLexBuilderFunctionAccess
+                Effect: Allow
+                Action:
+                - lex:PutBotAlias
+                - lex:CreateBotVersion
+                - lex:PutBot
+                - lex:DeleteBotAlias
+                - lex:DeleteBotVersion
+                - lex:DeleteBot
+                Resource: !Sub 'arn:aws:lex:${AWS::Region}:${AWS::AccountId}:bot:*:*'
+        - PolicyName: ChatOpsBuilderFunctionAccessPolicy2
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Sid: ChatOpsBuilderFunctionAccessPolicy2
+                Effect: Allow
+                Action:
+                - lex:PutSlotType
+                - lex:DeleteSlotType
+                Resource: !Sub 'arn:aws:lex:${AWS::Region}:${AWS::AccountId}:slottype:*'
+        - PolicyName: ChatOpsBuilderFunctionAccessPolicy3
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Sid: ChatOpsBuilderFunctionAccessPolicy3
+                Effect: Allow
+                Action:
+                - lex:PutIntent
+                - lex:DeleteIntent
+                Resource: !Sub 'arn:aws:lex:${AWS::Region}:${AWS::AccountId}:intent:*'
+  InstallChatOpsLexBot:
+    Type: 'Custom::ExecuteStepCustom'
+    Properties:
+      ServiceToken: !GetAtt
+        - AppFunction
+        - Arn               
+  AppFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Runtime: java8
+      Handler: software.aws.chatops_lex_bot.App::handleRequest
+      Timeout: 60
+      MemorySize: 512
+      CodeUri: ./target/chatops-lex-builder.jar
+      Role: !GetAtt ChatOpsFunctionRole.Arn

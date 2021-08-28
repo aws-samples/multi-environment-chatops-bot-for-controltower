@@ -1,0 +1,286 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Template that implements an AWS ChatOpsBot for account vending 
+Globals:
+  Api:
+    EndpointConfiguration: REGIONAL
+
+Parameters:
+  PortfolioId:
+    Type: String
+  ApprovalMailbox:
+    Type: String
+    Description: "The email of the mailbox that receives the emails with new account approval requests"
+    Default: "default-email@amazon.com"
+  ChatOpsBotName:
+    Type: String
+    Description: "The name of the Lex bot we will integrate"
+    Default: "ChatOps"
+  LexBotRegion:
+    Type: String
+    Description: "The region where the lex bot is deployed"
+    Default: "us-east-1"
+  Stage:
+    Type: String
+    Description: "Environment Stage: Dev, Staging, Prod"
+    Default: "Prod"
+  ProjectName:
+    Type: String
+    Description: "The name of this project"
+    Default: "chatops-lex"
+
+Resources:
+
+  ChatOpsLexFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Description: !Sub "ChatOps bot. Environment: ${Stage}"
+      Handler: software.aws.chatops_lex_api.StreamLambdaHandler::handleRequest
+      Runtime: java8
+      AutoPublishAlias: live
+      DeploymentPreference:
+        Type: Canary10Percent5Minutes
+        Alarms:
+          - !Ref CanaryErrorsAlarm
+      CodeUri: ./target/chatops-lex-api-1.0-SNAPSHOT-lambda-package.zip
+      MemorySize: 512
+      Role: !GetAtt ChatOpsFunctionRole.Arn
+      Timeout: 60
+      Environment:
+        Variables:
+          ENVIRONMENT: !Ref Stage
+          DYNAMO_TABLE: !Ref AccountVendingTable
+          CONFIRM_TOPIC_ARN: !Ref ChatOpsApprovalTopic
+          BOT_NAME: !Ref ChatOpsBotName
+          PROJECT_NAME: !Ref ProjectName  
+          LEX_BOT_REGION: !Ref LexBotRegion
+      Events:
+        ProxyResource:
+          Type: Api
+          Properties:
+            Path: /{proxy+}
+            Method: any
+            RestApiId: !Ref Api
+
+  MyScalableTarget:
+    Type: AWS::ApplicationAutoScaling::ScalableTarget
+    Properties:
+      MaxCapacity: 1
+      MinCapacity: 1
+      ResourceId: !Sub function:${ChatOpsLexFunction}:live
+      RoleARN: !Sub arn:aws:iam::${AWS::AccountId}:role/aws-service-role/lambda.application-autoscaling.amazonaws.com/AWSServiceRoleForApplicationAutoScaling_LambdaConcurrency
+      ScalableDimension: lambda:function:ProvisionedConcurrency
+      ServiceNamespace: lambda
+    DependsOn: ChatOpsLexFunctionAliaslive
+
+  MyTargetTrackingScalingPolicy:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: utilization
+      PolicyType: TargetTrackingScaling
+      ScalingTargetId: !Ref MyScalableTarget
+      TargetTrackingScalingPolicyConfiguration:
+        TargetValue: 0.70
+        PredefinedMetricSpecification:
+          PredefinedMetricType: LambdaProvisionedConcurrencyUtilization
+  Api:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: !Sub ${ProjectName}-${Stage}
+      StageName: !Sub ${Stage}
+      MethodSettings:
+        - MetricsEnabled: True
+          ResourcePath: '/*'
+          HttpMethod: '*'
+  SSMApiInformation:
+    Type: AWS::SSM::Parameter
+    Properties: 
+      Name: !Sub /chatops/api/${Stage}
+      AllowedPattern: >-
+        https?:\/\/(www\.)?[-a-zA-Z0-9@:%._\+~#=]{1,256}\.[a-zA-Z0-9()]{1,6}\b([-a-zA-Z0-9()@:%_\+.~#?&//=]*)
+      Description: "This parameter holds the address of the Api"
+      Type: String
+      Value: !Sub "https://${Api}.execute-api.${AWS::Region}.amazonaws.com/${Stage}/account"
+  ChatOpsLambdaLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties: 
+      LogGroupName: !Sub '/aws/lambda/${ChatOpsLexFunction}'
+      RetentionInDays: 30
+  LambdaDeploymentErrorMetric:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      FilterPattern: 'Exception'
+      LogGroupName: !Sub '/aws/lambda/${ChatOpsLexFunction}'
+      MetricTransformations:
+      - MetricValue: "1"
+        MetricNamespace: ChatOpsBot
+        MetricName: !Sub "${ProjectName}-Errors-Version-${ChatOpsLexFunction.Version.Version}-${Stage}"
+    DependsOn: ChatOpsLambdaLogGroup
+  CanaryErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Lambda function canary errors
+      AlarmName: !Sub "${ProjectName}-canary-error-alarm-${Stage}"
+      ComparisonOperator: GreaterThanThreshold
+      DatapointsToAlarm: 1
+      EvaluationPeriods: 1
+      TreatMissingData: notBreaching
+      MetricName: !Sub "${ProjectName}-Errors-Version-${ChatOpsLexFunction.Version.Version}-${Stage}"
+      Namespace: ChatOpsBot
+      Period: 60
+      Statistic: Sum
+      Threshold: 0
+  AccountVendingTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${ProjectName}_account_vending_${Stage}"
+      AttributeDefinitions:
+        - AttributeName: UserId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: UserId
+          KeyType: HASH
+      BillingMode: PAY_PER_REQUEST
+      TimeToLiveSpecification:
+        AttributeName: expiration
+        Enabled: true
+  ChatOpsApprovalTopicParam:
+    Type: AWS::SSM::Parameter
+    Properties: 
+      Description: url used to create links sent in the approval e-mail.
+      Name: !Sub "${ProjectName}_account_vending_topic_${Stage}"
+      Type: String
+      Value: !Ref ChatOpsApprovalTopic
+  ChatOpsBotNameParam:
+    Type: AWS::SSM::Parameter
+    Properties: 
+      Description: name of the lex bot that is being integrated.
+      Name: !Sub "${ProjectName}_bot_name_${Stage}"
+      Type: String
+      Value: !Ref ChatOpsBotName
+  ChatOpsCallbackURL:
+    Type: AWS::SSM::Parameter
+    Properties: 
+      AllowedPattern: 'https?:\/\/(www\.)?[-a-zA-Z0-9@:%._\+~#=]{1,256}\.[a-zA-Z0-9()]{1,6}\b([-a-zA-Z0-9()@:%_\+.~#?&//=]*)'
+      Description: url used by chatops to create links for approval activity
+      Name: !Sub "${ProjectName}_approval_url_${Stage}"
+      Type: String
+      Value: !Sub 'https://${Api}.execute-api.${AWS::Region}.amazonaws.com/${Stage}/account/confirm'
+  ChatOpsApprovalTopic:
+    Type: AWS::SNS::Topic
+    Properties: 
+      DisplayName: chatops_account_vending_topic
+      Subscription: 
+        - Endpoint: !Ref ApprovalMailbox
+          Protocol: email
+      TopicName: !Sub "${ProjectName}_aws_account_vending_topic_${Stage}"
+  ChatOpsPortfolioAssociation:
+    Type: AWS::ServiceCatalog::PortfolioPrincipalAssociation
+    Properties: 
+      AcceptLanguage: en
+      PortfolioId: !Ref PortfolioId
+      PrincipalARN: !GetAtt ChatOpsFunctionRole.Arn
+      PrincipalType: IAM
+
+  ChatOpsFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument: 
+        Version: "2012-10-17"
+        Statement: 
+          - 
+            Effect: "Allow"
+            Principal: 
+              Service: 
+                - "lambda.amazonaws.com"
+            Action: 
+              - "sts:AssumeRole"
+      Path: "/"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/AWSServiceCatalogEndUserFullAccess
+      Policies: 
+        - PolicyName: ChatOpsAccessPolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Sid: ChatOpsLexFullAccess
+                Effect: Allow
+                Action:
+                - lex:*
+                Resource: 
+                - !Sub 'arn:aws:lex:${LexBotRegion}:${AWS::AccountId}:bot:${ChatOpsBotName}:*'
+                - !Sub 'arn:aws:lex:${LexBotRegion}:${AWS::AccountId}:bot-alias/${ChatOpsBotName}/*'
+              - Sid: ChatOpsDynamo
+                Effect: Allow
+                Action:
+                - dynamodb:*
+                Resource: !GetAtt AccountVendingTable.Arn
+              - Sid: ChatOpsCallbackURL
+                Effect: Allow
+                Action:
+                - ssm:GetParameter
+                Resource: !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/chatops*'
+              - Sid: ChatOpsSNSApprovalTopic
+                Effect: Allow
+                Action:
+                - sns:*
+                Resource: !Ref ChatOpsApprovalTopic
+              - Sid: ChatOpsSearchProductsAsAdmin
+                Effect: Allow
+                Action:
+                - servicecatalog:SearchProductsAsAdmin
+                Resource: "*"
+              - Sid: ChatOpsProvisionProducts
+                Effect: Allow
+                Action:
+                - servicecatalog:ProvisionProduct
+                Resource: "*"
+              - Sid: ChatOpsDescribeProductsAsAdmin
+                Effect: Allow
+                Action:
+                - servicecatalog:DescribeProductAsAdmin
+                Resource: "*"
+              - Sid: ControlTowerCreateManagedAccount
+                Effect: Allow
+                Action:
+                - sso:GetProfile
+                - sso:CreateProfile
+                - sso:UpdateProfile
+                - sso:AssociateProfile
+                - sso:CreateApplicationInstance
+                - sso:GetSSOStatus
+                - sso:GetTrust
+                - sso:CreateTrust
+                - sso:UpdateTrust
+                - sso:GetApplicationInstance
+                - sso:ListDirectoryAssociations
+                - sso:ListPermissionSets
+                - sso:GetPermissionSet
+                - sso:ListProfileAssociations
+                - sso-directory:ListMembersInGroup
+                - sso-directory:AddMemberToGroup
+                - sso-directory:SearchGroups
+                - sso-directory:SearchUsers
+                - sso-directory:CreateUser
+                - sso-directory:DescribeGroups
+                - sso-directory:DescribeDirectory
+                - sso-directory:GetUserPoolInfo
+                - controltower:CreateManagedAccount
+                - controltower:DescribeManagedAccount
+                - controltower:DeregisterManagedAccount
+                - s3:GetObject
+                - organizations:describeOrganization
+                - sso:DescribeRegisteredRegions
+                Resource: "*"
+Outputs:
+  ApiUrl:
+    Description: URL for application
+    Value: !Sub 'https://${Api}.execute-api.${AWS::Region}.amazonaws.com/${Stage}/account'
+    Export:
+      Name: !Sub '${ProjectName}-api-${Stage}' 
+  ApiApproval:
+    Description: URL of the approval api
+    Value: !Sub 'https://${Api}.execute-api.${AWS::Region}.amazonaws.com/${Stage}/account/confirm'
+    Export:
+      Name: !Sub '${ProjectName}-approval-api-${Stage}'
